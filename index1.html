@@ -10,8 +10,9 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- FMP API Key (Replace with real key from https://site.financialmodelingprep.com/register) -->
     <script>
-        const API_KEY = 'YOUR_FMP_API_KEY';
+        const API_KEY = 'YOUR_FMP_API_KEY'; // Replace with your key
         const BASE_URL = 'https://financialmodelingprep.com/api';
+        const PROXY_URL = 'https://cors-anywhere.herokuapp.com/'; // Temporary proxy for testing
     </script>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
@@ -102,10 +103,19 @@
             const cached = localStorage.getItem(cacheKey);
             if (cached) return JSON.parse(cached);
 
-            const response = await fetch(`${BASE_URL}/v3/search?query=${query}&limit=10&apikey=${API_KEY}`);
-            const data = await response.json();
-            if (data.length > 0) localStorage.setItem(cacheKey, JSON.stringify(data));
-            return data;
+            try {
+                const response = await fetch(`${PROXY_URL}${BASE_URL}/v3/search?query=${query}&limit=10&apikey=${API_KEY}`);
+                if (!response.ok) {
+                    if (response.status === 429) throw new Error('Rate limit exceeded');
+                    if (response.status === 401) throw new Error('Invalid API key');
+                    throw new Error('API request failed');
+                }
+                const data = await response.json();
+                if (data.length > 0) localStorage.setItem(cacheKey, JSON.stringify(data));
+                return data;
+            } catch (error) {
+                throw error;
+            }
         }
 
         function retrySearch(query) {
@@ -118,6 +128,7 @@
             if (query.length < 2) {
                 suggestions.classList.add('hidden');
                 searchInput.setAttribute('aria-expanded', 'false');
+                showLoading(false);
                 return;
             }
             showLoading(true);
@@ -128,6 +139,7 @@
                     suggestions.innerHTML = '<div class="p-2 text-red-500">No results found</div>';
                     suggestions.classList.remove('hidden');
                     searchInput.setAttribute('aria-expanded', 'true');
+                    showLoading(false);
                     return;
                 }
                 data.forEach((match, i) => {
@@ -142,7 +154,7 @@
                 suggestions.classList.remove('hidden');
                 searchInput.setAttribute('aria-expanded', 'true');
             } catch (error) {
-                suggestions.innerHTML = '<div class="p-2 text-red-500">Error: Unable to fetch data. <button onclick="retrySearch(\'' + query + '\')" class="underline">Retry</button></div>';
+                suggestions.innerHTML = `<div class="p-2 text-red-500">Error: ${error.message}. <button onclick="retrySearch('${query}')" class="underline">Retry</button></div>`;
                 suggestions.classList.remove('hidden');
                 console.error('Error fetching suggestions:', error);
             }
@@ -180,22 +192,23 @@
             showLoading(true);
             document.getElementById('results').classList.remove('hidden');
             try {
-                const response = await fetch(`${BASE_URL}/v3/historical-price-full/${symbol}?apikey=${API_KEY}`);
+                const response = await fetch(`${PROXY_URL}${BASE_URL}/v3/historical-price-full/${symbol}?apikey=${API_KEY}`);
+                if (!response.ok) throw new Error('Failed to fetch historical data');
                 const data = await response.json();
                 if (!data.historical || data.historical.length === 0) throw new Error('No historical data available');
 
-                // Extract dates and closes (aggregate to monthly for consistency)
+                // Aggregate to monthly data
                 const monthlyData = {};
                 data.historical.forEach(entry => {
-                    const month = entry.date.slice(0, 7); // YYYY-MM
+                    const month = entry.date.slice(0, 7);
                     if (!monthlyData[month] || new Date(entry.date) > new Date(monthlyData[month].date)) {
                         monthlyData[month] = entry;
                     }
                 });
-                const dates = Object.keys(monthlyData).sort().slice(-120); // Last 10 years
+                const dates = Object.keys(monthlyData).sort().slice(-60); // Last 5 years for robustness
                 const prices = dates.map(month => monthlyData[month].close);
 
-                if (prices.length < 60) throw new Error('Insufficient data for analysis');
+                if (prices.length < 24) throw new Error('Insufficient data for analysis (minimum 24 months)');
 
                 // Run Classification Formula
                 const classification = classifyStock(prices);
