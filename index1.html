@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Prediction Dashboard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js CDN for visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- FMP API Key (Replace with real key from https://site.financialmodelingprep.com/register) -->
+    <script>
+        const API_KEY = 'YOUR_FMP_API_KEY';
+        const BASE_URL = 'https://financialmodelingprep.com/api';
+    </script>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
+    <!-- Hero Section -->
+    <header class="w-full max-w-4xl text-center mb-8">
+        <h1 class="text-3xl font-bold mb-2">Stock Prediction Dashboard</h1>
+        <p class="text-lg text-gray-600 dark:text-gray-400">Search companies, classify success, and predict future prices.</p>
+    </header>
+
+    <!-- Search Bar with Inline Loader -->
+    <div class="w-full max-w-4xl mb-8 relative">
+        <input type="text" id="searchInput" placeholder="Search for a company (e.g., GOOGL for Google)" class="w-full p-4 pr-10 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-300" aria-label="Search for a company" role="combobox" aria-controls="suggestions" aria-expanded="false">
+        <div id="searchLoader" class="absolute right-3 top-3 animate-spin h-5 w-5 border-t-2 border-blue-500 rounded-full hidden"></div>
+        <div id="suggestions" class="mt-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-lg max-h-60 overflow-y-auto hidden" role="listbox"></div>
+    </div>
+
+    <!-- Results Section -->
+    <div id="results" class="w-full max-w-4xl hidden">
+        <!-- Classification Card -->
+        <div id="classificationCard" class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md mb-8 transition duration-500 transform hover:scale-105">
+            <h2 class="text-2xl font-semibold mb-4">Classification Result</h2>
+            <p id="classificationResult" class="text-lg"></p>
+            <div id="detailsAccordion" class="mt-4"></div>
+        </div>
+
+        <!-- Prediction Section (Shown only if successful) -->
+        <div id="predictionSection" class="hidden">
+            <!-- Date Range Picker -->
+            <div class="mb-8">
+                <label class="block text-lg font-medium mb-2">Select Prediction Range</label>
+                <div class="flex space-x-4">
+                    <input type="date" id="startDate" class="p-2 border rounded-lg dark:bg-gray-800">
+                    <input type="date" id="endDate" class="p-2 border rounded-lg dark:bg-gray-800">
+                    <button id="updatePrediction" class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition focus:ring-2 focus:ring-blue-500">Update</button>
+                </div>
+            </div>
+
+            <!-- Charts -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div>
+                    <h3 class="text-xl font-semibold mb-2">Historical Prices</h3>
+                    <canvas id="historicalChart" aria-label="Historical stock prices chart"></canvas>
+                </div>
+                <div>
+                    <h3 class="text-xl font-semibold mb-2">Predicted Prices</h3>
+                    <canvas id="predictionChart" aria-label="Predicted stock prices chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Predicted Values Table -->
+            <div class="mt-8">
+                <h3 class="text-xl font-semibold mb-2">Predicted Values</h3>
+                <table class="w-full border-collapse">
+                    <thead>
+                        <tr class="bg-gray-200 dark:bg-gray-700">
+                            <th class="p-2">Date</th>
+                            <th class="p-2">Predicted Price</th>
+                        </tr>
+                    </thead>
+                    <tbody id="predictionTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        // Utility Functions
+        function showLoading(show) {
+            document.getElementById('searchLoader').classList.toggle('hidden', !show);
+        }
+
+        function debounce(func, delay) {
+            let timeout;
+            return (...args) => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func(...args), delay);
+            };
+        }
+
+        // Search Functionality
+        const searchInput = document.getElementById('searchInput');
+        const suggestions = document.getElementById('suggestions');
+        let selectedIndex = -1;
+
+        async function fetchSuggestions(query) {
+            const cacheKey = `search_${query}`;
+            const cached = localStorage.getItem(cacheKey);
+            if (cached) return JSON.parse(cached);
+
+            const response = await fetch(`${BASE_URL}/v3/search?query=${query}&limit=10&apikey=${API_KEY}`);
+            const data = await response.json();
+            if (data.length > 0) localStorage.setItem(cacheKey, JSON.stringify(data));
+            return data;
+        }
+
+        function retrySearch(query) {
+            searchInput.value = query;
+            searchInput.dispatchEvent(new Event('input'));
+        }
+
+        searchInput.addEventListener('input', debounce(async () => {
+            const query = searchInput.value.trim();
+            if (query.length < 2) {
+                suggestions.classList.add('hidden');
+                searchInput.setAttribute('aria-expanded', 'false');
+                return;
+            }
+            showLoading(true);
+            try {
+                const data = await fetchSuggestions(query);
+                suggestions.innerHTML = '';
+                if (!data || data.length === 0) {
+                    suggestions.innerHTML = '<div class="p-2 text-red-500">No results found</div>';
+                    suggestions.classList.remove('hidden');
+                    searchInput.setAttribute('aria-expanded', 'true');
+                    return;
+                }
+                data.forEach((match, i) => {
+                    const div = document.createElement('div');
+                    div.classList.add('p-2', 'hover:bg-gray-100', 'dark:hover:bg-gray-700', 'cursor-pointer', 'transition', 'animate-pulse');
+                    div.textContent = `${match.symbol} - ${match.name}`;
+                    div.setAttribute('role', 'option');
+                    div.setAttribute('aria-selected', 'false');
+                    div.addEventListener('click', () => selectCompany(match.symbol));
+                    suggestions.appendChild(div);
+                });
+                suggestions.classList.remove('hidden');
+                searchInput.setAttribute('aria-expanded', 'true');
+            } catch (error) {
+                suggestions.innerHTML = '<div class="p-2 text-red-500">Error: Unable to fetch data. <button onclick="retrySearch(\'' + query + '\')" class="underline">Retry</button></div>';
+                suggestions.classList.remove('hidden');
+                console.error('Error fetching suggestions:', error);
+            }
+            showLoading(false);
+        }, 300));
+
+        // Keyboard Navigation
+        searchInput.addEventListener('keydown', (e) => {
+            const items = suggestions.querySelectorAll('div[role="option"]');
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selectedIndex = Math.min(selectedIndex + 1, items.length - 1);
+                updateSelection(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selectedIndex = Math.max(selectedIndex - 1, -1);
+                updateSelection(items);
+            } else if (e.key === 'Enter' && selectedIndex >= 0) {
+                e.preventDefault();
+                selectCompany(items[selectedIndex].textContent.split(' - ')[0]);
+            }
+        });
+
+        function updateSelection(items) {
+            items.forEach((item, i) => {
+                item.classList.toggle('bg-blue-100', i === selectedIndex);
+                item.setAttribute('aria-selected', i === selectedIndex);
+            });
+        }
+
+        // Select Company and Analyze
+        async function selectCompany(symbol) {
+            suggestions.classList.add('hidden');
+            searchInput.setAttribute('aria-expanded', 'false');
+            showLoading(true);
+            document.getElementById('results').classList.remove('hidden');
+            try {
+                const response = await fetch(`${BASE_URL}/v3/historical-price-full/${symbol}?apikey=${API_KEY}`);
+                const data = await response.json();
+                if (!data.historical || data.historical.length === 0) throw new Error('No historical data available');
+
+                // Extract dates and closes (aggregate to monthly for consistency)
+                const monthlyData = {};
+                data.historical.forEach(entry => {
+                    const month = entry.date.slice(0, 7); // YYYY-MM
+                    if (!monthlyData[month] || new Date(entry.date) > new Date(monthlyData[month].date)) {
+                        monthlyData[month] = entry;
+                    }
+                });
+                const dates = Object.keys(monthlyData).sort().slice(-120); // Last 10 years
+                const prices = dates.map(month => monthlyData[month].close);
+
+                if (prices.length < 60) throw new Error('Insufficient data for analysis');
+
+                // Run Classification Formula
+                const classification = classifyStock(prices);
+                displayClassification(classification, symbol);
+
+                if (classification.label === 1) {
+                    // Run Prediction if successful
+                    const predictions = predictPrices(prices, 60);
+                    displayPredictions(dates, prices, predictions);
+                }
+            } catch (error) {
+                document.getElementById('classificationResult').innerHTML = `<span class="text-red-500">Error: ${error.message}. <button onclick="retrySearch('${symbol}')" class="underline">Retry</button></span>`;
+                document.getElementById('predictionSection').classList.add('hidden');
+            }
+            showLoading(false);
+        }
+
+        // Classification Formula (Simplified Logistic Regression)
+        function classifyStock(prices) {
+            const n = prices.length;
+            const returns = [];
+            for (let i = 1; i < n; i++) {
+                returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+            }
+            const meanReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+            const volatility = Math.sqrt(returns.reduce((a, b) => a + Math.pow(b - meanReturn, 2), 0) / (returns.length - 1));
+            const cagr = Math.pow(prices[n-1] / prices[0], 1 / (n / 12)) - 1;
+            const sharpe = (meanReturn - 0.03 / 12) / volatility;
+
+            const probability = 1 / (1 + Math.exp(- (-1.2 + 3.5 * cagr + 2.0 * sharpe)));
+            return { label: probability > 0.5 ? 1 : 0, probability: probability.toFixed(2), cagr: cagr.toFixed(2), sharpe: sharpe.toFixed(2) };
+        }
+
+        // Display Classification
+        function displayClassification(classification, symbol) {
+            const resultElem = document.getElementById('classificationResult');
+            const color = classification.label === 1 ? 'text-green-500' : 'text-red-500';
+            resultElem.innerHTML = `The stock ${symbol} is classified as <span class="${color} font-bold">${classification.label === 1 ? 'Successful' : 'Unsuccessful'}</span> (Probability: ${classification.probability}).`;
+            
+            const accordion = document.getElementById('detailsAccordion');
+            accordion.innerHTML = `<details class="cursor-pointer"><summary>Details</summary><p>CAGR: ${classification.cagr}, Sharpe: ${classification.sharpe}</p></details>`;
+
+            document.getElementById('predictionSection').classList.toggle('hidden', classification.label !== 1);
+            document.getElementById('classificationCard').classList.add('animate-flip');
+            // Custom flip animation
+            const style = document.createElement('style');
+            style.innerHTML = `
+                .animate-flip {
+                    animation: flip 0.5s ease-in-out;
+                }
+                @keyframes flip {
+                    from { transform: rotateY(180deg); opacity: 0; }
+                    to { transform: rotateY(0); opacity: 1; }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        // Prediction Formula (Linear Regression - Stub for ARIMA-GARCH)
+        function predictPrices(prices, k) {
+            const n = prices.length;
+            const X = Array.from({length: n}, (_, i) => i + 1);
+            const sumX = X.reduce((a, b) => a + b, 0);
+            const sumY = prices.reduce((a, b) => a + b, 0);
+            const sumXY = X.reduce((a, b, i) => a + b * prices[i], 0);
+            const sumX2 = X.reduce((a, b) => a + b * b, 0);
+            const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+            const intercept = (sumY - slope * sumX) / n;
+
+            const predictions = [];
+            for (let j = 1; j <= k; j++) {
+                predictions.push(intercept + slope * (n + j));
+            }
+            return predictions;
+        }
+
+        // Display Predictions with Charts
+        let historicalChart, predictionChart;
+        function displayPredictions(dates, prices, predictions) {
+            const futureDates = Array.from({length: predictions.length}, (_, i) => {
+                const lastDate = new Date(dates[dates.length - 1]);
+                lastDate.setMonth(lastDate.getMonth() + i + 1);
+                return lastDate.toISOString().slice(0, 7);
+            });
+
+            // Historical Chart
+            if (historicalChart) historicalChart.destroy();
+            historicalChart = new Chart(document.getElementById('historicalChart'), {
+                type: 'line',
+                data: { labels: dates, datasets: [{ label: 'Historical Prices', data: prices, borderColor: '#3B82F6', pointRadius: 3 }] },
+                options: { animation: { duration: 1000 }, scales: { y: { beginAtZero: false } }, plugins: { tooltip: { enabled: true } } }
+            });
+
+            // Prediction Chart
+            if (predictionChart) predictionChart.destroy();
+            predictionChart = new Chart(document.getElementById('predictionChart'), {
+                type: 'line',
+                data: { labels: futureDates, datasets: [{ label: 'Predicted Prices', data: predictions, borderColor: '#8B5CF6', borderDash: [5, 5], pointRadius: 3 }] },
+                options: { animation: { duration: 1000 }, scales: { y: { beginAtZero: false } }, plugins: { tooltip: { enabled: true } } }
+            });
+
+            // Table
+            const tableBody = document.getElementById('predictionTable');
+            tableBody.innerHTML = '';
+            predictions.forEach((price, i) => {
+                const row = `<tr><td class="p-2">${futureDates[i]}</td><td class="p-2">$${price.toFixed(2)}</td></tr>`;
+                tableBody.innerHTML += row;
+            });
+        }
+
+        // Date Range Update (Stub)
+        document.getElementById('updatePrediction').addEventListener('click', () => {
+            alert('Updating predictions for selected range... (Implement dynamic fetch for range in future)');
+        });
+    </script>
+</body>
+</html>
